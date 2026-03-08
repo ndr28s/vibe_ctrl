@@ -218,7 +218,8 @@ function removeGroup(groupId) {
     }
   }
 
-  // Disconnect WS
+  // Mark removed so close handler won't reconnect
+  group.removed = true;
   clearTimeout(group.reconnectTimer);
   if (group.ws) { try { group.ws.close(); } catch {} }
 
@@ -260,6 +261,7 @@ function connectGroup(group) {
   group.ws.addEventListener('close', () => {
     group.connected = false;
     updateGlobalConnectionState();
+    if (group.removed) return;
     for (const id of Object.keys(group.machines)) {
       group.machines[id].state = 'offline';
       updateMachineCard(group, id);
@@ -274,8 +276,9 @@ function connectGroup(group) {
 }
 
 function scheduleReconnectGroup(group) {
+  if (group.removed) return;
   clearTimeout(group.reconnectTimer);
-  group.reconnectTimer = setTimeout(() => { if (!group.connected) connectGroup(group); }, group.reconnectDelay);
+  group.reconnectTimer = setTimeout(() => { if (!group.connected && !group.removed) connectGroup(group); }, group.reconnectDelay);
   group.reconnectDelay = Math.min(group.reconnectDelay * 1.6, RECONNECT_MAX);
 }
 
@@ -526,24 +529,10 @@ function renderGroupRow(group) {
   `;
 
   // Bind remove button
-  const removeBtn = groupEl.querySelector('.token-remove-btn');
-  removeBtn.addEventListener('click', (e) => {
+  groupEl.querySelector('.token-remove-btn').addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
-    // Double-tap to confirm: first tap marks, second tap removes
-    if (removeBtn._confirmPending) {
-      removeGroup(group.id);
-    } else {
-      removeBtn._confirmPending = true;
-      removeBtn.textContent = '?';
-      removeBtn.style.color = 'var(--red)';
-      toast('Tap again to remove', 'error');
-      setTimeout(() => {
-        removeBtn._confirmPending = false;
-        removeBtn.textContent = '\u00d7';
-        removeBtn.style.color = '';
-      }, 3000);
-    }
+    removeGroup(group.id);
   });
 
   const cardsContainer = groupEl.querySelector('.token-group-cards');

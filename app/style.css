@@ -109,7 +109,6 @@ body {
 .machines-scroll {
   display: flex; flex-direction: column; gap: 4px;
   padding: 0 16px 14px;
-  overflow-y: auto; max-height: 50vh;
   scrollbar-width: none;
 }
 .machines-scroll::-webkit-scrollbar { display: none; }
