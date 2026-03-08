@@ -353,6 +353,7 @@ function handleStatus(group, msg) {
   if (msg.project) m.project = msg.project;
   if (msg.model) m.model = msg.model;
   if (msg.memory !== undefined) m.memory = msg.memory;
+  if (msg.fullSessionId) m.fullSessionId = msg.fullSessionId;
   updateMachineCard(group, id);
 }
 
@@ -569,10 +570,10 @@ function selectMachine(group, machineId) {
   state.selectedTarget = group.id + ':' + machineId;
   dom.targetSelect.value = state.selectedTarget;
   highlightSelectedCard();
-  // Fill session ID if machineId contains session (e.g. "home-pc/abc12345")
-  const slashIdx = machineId.indexOf('/');
-  if (slashIdx > 0) {
-    dom.sessionInput.value = machineId.substring(slashIdx + 1);
+  // Fill real session ID for --resume
+  const m = group.machines[machineId];
+  if (m && m.fullSessionId) {
+    dom.sessionInput.value = m.fullSessionId;
   }
   dom.promptInput.focus();
 }

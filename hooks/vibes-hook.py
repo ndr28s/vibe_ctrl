@@ -113,12 +113,24 @@ def get_project_name(cwd: str, transcript_path: str) -> str:
 # Send Status
 # ============================================================================
 
-def get_session_id(transcript_path: str) -> str:
-    """Extract short session ID from transcript path."""
+def get_session_id(data: dict[str, Any]) -> tuple[str, str]:
+    """Get session ID. Returns (file_key, full_session_id).
+    file_key: short name for the status file
+    full_session_id: real Claude session ID for --resume
+    """
+    # Claude Code passes session_id directly in hook data
+    real_sid = data.get("session_id", "")
+    transcript_path = data.get("transcript_path", "")
+
+    if real_sid:
+        # Use first 8 chars as file key, full ID for resume
+        return real_sid[:8], real_sid
+
     if transcript_path:
-        name = Path(transcript_path).stem  # e.g. "abc12345-..."
-        return name[:8] if name else "default"
-    return "default"
+        name = Path(transcript_path).stem
+        return (name[:8], name) if name else ("default", "default")
+
+    return "default", "default"
 
 
 def send_status(payload: dict[str, Any], session_id: str) -> bool:
@@ -152,7 +164,7 @@ def main() -> None:
     project_name = get_project_name(cwd, transcript_path)
     state = get_state(event_name, permission_mode)
     model = data.get("model", "")
-    session_id = get_session_id(transcript_path)
+    file_key, full_session_id = get_session_id(data)
 
     # Estimate memory usage from transcript file size vs typical max (~2MB for most models)
     memory = 0
@@ -164,7 +176,7 @@ def main() -> None:
         except (OSError, ValueError):
             memory = 0
 
-    debug_log(f"Event: {event_name}, State: {state}, Project: {project_name}, Session: {session_id}, Model: {model}, Memory: {memory}%")
+    debug_log(f"Event: {event_name}, State: {state}, Project: {project_name}, Session: {file_key}, Model: {model}, Memory: {memory}%")
 
     payload = {
         "type": "status",
@@ -174,11 +186,12 @@ def main() -> None:
         "model": model,
         "memory": memory,
         "machineId": MACHINE_ID,
-        "sessionId": session_id,
+        "sessionId": file_key,
+        "fullSessionId": full_session_id,
         "timestamp": __import__("time").time(),
     }
 
-    send_status(payload, session_id)
+    send_status(payload, file_key)
 
 
 if __name__ == "__main__":

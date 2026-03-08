@@ -685,6 +685,7 @@ function watchStatusFiles() {
               model: status.model || "",
               memory: status.memory || 0,
               machineId: `${MACHINE_ID}/${sessionId}`,
+              fullSessionId: status.fullSessionId || "",
             });
             log(`Hook status forwarded: ${status.state} [${sessionId}] (${status.project || "?"})`);
           }

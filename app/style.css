@@ -200,13 +200,13 @@ body {
 /* VibeMon engine renders at 172x320 CSS pixels, scaled to ~2/3, vertically compressed */
 .card-vibemon-wrapper {
   width: 110px;
-  height: 170px;
+  height: 175px;
   overflow: hidden;
 }
 .card-vibemon {
   width: 172px;
   height: 320px;
-  transform: scale(0.6395) translateY(-26px);
+  transform: scale(0.6395) translateY(-18px);
   transform-origin: top left;
 }
 
@@ -508,6 +508,6 @@ textarea#prompt { flex: 1; resize: none; min-height: 48px; max-height: 120px; li
 @media (max-width: 360px) {
   .machine-card { width: 95px; }
   .card-vibemon-wrapper { width: 95px; height: 146px; }
-  .card-vibemon { transform: scale(0.5523) translateY(-26px); }
+  .card-vibemon { transform: scale(0.5523) translateY(-18px); }
   .session-input { width: 90px; }
 }
