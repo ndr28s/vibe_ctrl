@@ -1,0 +1,7 @@
+{
+  "serverUrl": "wss://vibes.forthetest.shop/ws",
+  "token": "your_token_here",
+  "machineId": "your-machine-name",
+  "claudePath": "claude",
+  "maxConcurrent": 1
+}

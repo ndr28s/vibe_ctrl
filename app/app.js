@@ -359,7 +359,11 @@ function handleStatus(group, msg) {
 function handleStream(group, msg) {
   const mid = msg.machineId || msg.machine_id || msg.id || 'default';
   const blockKey = group.id + ':' + mid;
-  let block = state.resultBlocks[blockKey] || createResultBlock(group, mid, blockKey);
+  // If existing block is already complete, create a new one
+  let block = state.resultBlocks[blockKey];
+  if (!block || block.el.classList.contains('complete')) {
+    block = createResultBlock(group, mid, blockKey);
+  }
   appendChunk(block, msg.chunk || msg.content || '');
   scrollToBottom();
 }
@@ -367,7 +371,10 @@ function handleStream(group, msg) {
 function handleResult(group, msg) {
   const mid = msg.machineId || msg.machine_id || msg.id || 'default';
   const blockKey = group.id + ':' + mid;
-  let block = state.resultBlocks[blockKey] || createResultBlock(group, mid, blockKey);
+  let block = state.resultBlocks[blockKey];
+  if (!block || block.el.classList.contains('complete')) {
+    block = createResultBlock(group, mid, blockKey);
+  }
   const cursor = block.bodyEl.querySelector('.cursor');
   if (cursor) cursor.remove();
   block.el.classList.remove('streaming');
