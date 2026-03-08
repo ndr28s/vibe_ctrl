@@ -13,7 +13,7 @@
 
   <link rel="manifest" href="./manifest.json" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./style.css?v=13" />
+  <link rel="stylesheet" href="./style.css?v=14" />
 </head>
 <body>
 
@@ -33,12 +33,16 @@
 
     <!-- Machine list -->
     <section class="machines-section">
-      <div class="section-label">machines <button class="sessions-btn" id="sessions-btn" title="Browse sessions">sessions</button></div>
+      <div class="section-label">
+        machines
+        <button class="add-token-btn" id="add-token-btn" title="Add token">+</button>
+        <button class="sessions-btn" id="sessions-btn" title="Browse sessions">sessions</button>
+      </div>
       <div class="machines-scroll" id="machines-list" role="list" aria-label="Connected machines">
-        <!-- Cards rendered by app.js -->
-        <div class="machine-card-empty">
-          <div class="char-face" style="opacity:.25">( · _ · )</div>
-          <span>no daemons<br>connected</span>
+        <!-- Token group rows rendered by app.js -->
+        <div class="machine-card-empty" style="width:100%">
+          <div class="empty-face">( · _ · )</div>
+          <span>no tokens added<br>tap + to add one</span>
         </div>
       </div>
     </section>
@@ -49,14 +53,11 @@
         type="text"
         id="server-url"
         class="server-url-input"
-        placeholder="ws://host:port"
+        placeholder="wss://vibes.forthetest.shop/ws"
         aria-label="WebSocket server URL"
         autocomplete="off"
         spellcheck="false"
       />
-      <button class="icon-btn" id="settings-btn" aria-label="Edit credentials" title="Credentials">
-        &#x2699;
-      </button>
     </div>
 
     <!-- Command input -->
@@ -110,18 +111,18 @@
 
   </main>
 
-  <!-- ── Auth / Settings Modal ──────────────────────────── -->
-  <div class="modal-overlay hidden" id="auth-modal" role="dialog" aria-modal="true" aria-label="Credentials">
+  <!-- ── Add Token Modal ──────────────────────────────── -->
+  <div class="modal-overlay hidden" id="token-modal" role="dialog" aria-modal="true" aria-label="Add Token">
     <div class="modal-sheet">
       <div class="modal-handle"></div>
-      <h2 class="modal-title">Connect</h2>
-      <p class="modal-sub">Enter your relay server token to authenticate.</p>
+      <h2 class="modal-title">Add Token</h2>
+      <p class="modal-sub">Connect to a relay server with a token to monitor machines.</p>
 
       <div class="modal-field">
-        <label for="auth-token">Access Token</label>
+        <label for="token-input">Access Token</label>
         <input
           type="password"
-          id="auth-token"
+          id="token-input"
           placeholder="your-secret-token"
           autocomplete="current-password"
           spellcheck="false"
@@ -129,10 +130,21 @@
       </div>
 
       <div class="modal-field">
-        <label for="auth-server">Server URL</label>
+        <label for="token-label">Label (optional)</label>
         <input
           type="text"
-          id="auth-server"
+          id="token-label"
+          placeholder="e.g. home, work, pi"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+
+      <div class="modal-field">
+        <label for="token-server">Server URL</label>
+        <input
+          type="text"
+          id="token-server"
           placeholder="wss://vibes.forthetest.shop/ws"
           autocomplete="off"
           spellcheck="false"
@@ -140,8 +152,8 @@
       </div>
 
       <div class="modal-actions">
-        <button class="btn-ghost" id="auth-cancel">Cancel</button>
-        <button class="btn-primary" id="auth-submit">Connect</button>
+        <button class="btn-ghost" id="token-cancel">Cancel</button>
+        <button class="btn-primary" id="token-submit">Add</button>
       </div>
     </div>
   </div>
@@ -149,10 +161,9 @@
   <!-- ── Toast container ────────────────────────────────── -->
   <div class="toast-container" id="toast-container" aria-live="assertive" aria-atomic="true"></div>
 
-  <script src="./app.js?v=13"></script>
+  <script src="./app.js?v=14"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      // Unregister old service workers to prevent caching issues
       navigator.serviceWorker.getRegistrations().then(regs => {
         regs.forEach(r => r.unregister());
       });

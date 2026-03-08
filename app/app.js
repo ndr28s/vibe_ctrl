@@ -1,6 +1,6 @@
 /**
- * Vibes PWA — WebSocket controller client
- * Uses VibeMon engine for character rendering.
+ * Vibes PWA — Multi-token WebSocket controller client
+ * Each token creates a separate WS connection and row of machine cards.
  */
 
 const DEFAULT_SERVER = 'wss://vibes.forthetest.shop/ws';
@@ -8,7 +8,6 @@ const RECONNECT_BASE = 1500;
 const RECONNECT_MAX  = 30000;
 const STATIC_BASE    = 'https://static.vibemon.io';
 
-// VibeMon state colors (from constants.json)
 const STATE_COLORS = {
   start:'#00CCCC', idle:'#00AA00', thinking:'#9933FF', planning:'#008888',
   working:'#0066CC', packing:'#AAAAAA', notification:'#FFCC00',
@@ -31,15 +30,15 @@ const TOOL_LABELS = {
 // ── State ──────────────────────────────────────────────────────────────────
 
 const state = {
-  ws: null, connected: false, reconnectTimer: null, reconnectDelay: RECONNECT_BASE,
-  token: '', serverUrl: '',
-  machines: {},        // id → { id, name, state, tool, engine }
-  selectedMachine: null,
+  groups: [],        // { id, token, label, serverUrl, ws, connected, reconnectTimer, reconnectDelay, machines:{} }
+  selectedTarget: null,  // "groupId:machineId"
   resultBlocks: {},
   blockCounter: 0,
   vibeMonReady: false,
-  createEngine: null,  // VibeMon engine factory
+  createEngine: null,
 };
+
+let groupIdCounter = 0;
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
 
@@ -55,14 +54,14 @@ document.addEventListener('DOMContentLoaded', () => {
     sessionInput: $('session-input'), promptInput: $('prompt'),
     sendBtn: $('send-btn'), resultsScroll: $('results-scroll'),
     resultsEmpty: $('results-empty'), serverInput: $('server-url'),
-    authModal: $('auth-modal'), authToken: $('auth-token'), authServer: $('auth-server'),
+    addTokenBtn: $('add-token-btn'),
+    tokenModal: $('token-modal'), tokenInput: $('token-input'),
+    tokenServer: $('token-server'), tokenLabel: $('token-label'),
   });
-  loadSettings();
+  loadGroups();
   bindEvents();
   loadVibeMonEngine();
-
-  if (!state.token) showAuthModal();
-  else connect();
+  connectAll();
 });
 
 function loadVibeMonEngine() {
@@ -78,19 +77,56 @@ function loadVibeMonEngine() {
   window.addEventListener('vibemon-ready', () => {
     state.createEngine = window.__vibeMonCreateEngine;
     state.vibeMonReady = true;
-    renderMachines();
+    renderAllGroups();
   });
 }
 
-function loadSettings() {
-  state.token     = localStorage.getItem('vibes_token')  || '';
-  state.serverUrl = localStorage.getItem('vibes_server') || DEFAULT_SERVER;
-  if (dom.serverInput) dom.serverInput.value = state.serverUrl;
+// ── Persistence ────────────────────────────────────────────────────────────
+
+function loadGroups() {
+  const raw = localStorage.getItem('vibes_groups');
+  if (raw) {
+    try {
+      const saved = JSON.parse(raw);
+      state.groups = saved.map(g => ({
+        id: 'g' + (++groupIdCounter),
+        token: g.token,
+        label: g.label || g.token.substring(0, 12),
+        serverUrl: g.serverUrl || DEFAULT_SERVER,
+        ws: null, connected: false,
+        reconnectTimer: null, reconnectDelay: RECONNECT_BASE,
+        machines: {},
+      }));
+    } catch { state.groups = []; }
+  } else {
+    // Migration from old single-token format
+    const oldToken = localStorage.getItem('vibes_token');
+    const oldServer = localStorage.getItem('vibes_server');
+    if (oldToken) {
+      state.groups.push({
+        id: 'g' + (++groupIdCounter),
+        token: oldToken,
+        label: oldToken.substring(0, 12),
+        serverUrl: oldServer || DEFAULT_SERVER,
+        ws: null, connected: false,
+        reconnectTimer: null, reconnectDelay: RECONNECT_BASE,
+        machines: {},
+      });
+      saveGroups();
+      localStorage.removeItem('vibes_token');
+      localStorage.removeItem('vibes_server');
+    }
+  }
+
+  // Update server URL display
+  if (dom.serverInput) {
+    dom.serverInput.value = state.groups.length > 0 ? state.groups[0].serverUrl : DEFAULT_SERVER;
+  }
 }
 
-function saveSettings() {
-  localStorage.setItem('vibes_token',  state.token);
-  localStorage.setItem('vibes_server', state.serverUrl);
+function saveGroups() {
+  const data = state.groups.map(g => ({ token: g.token, label: g.label, serverUrl: g.serverUrl }));
+  localStorage.setItem('vibes_groups', JSON.stringify(data));
 }
 
 // ── Event bindings ─────────────────────────────────────────────────────────
@@ -105,319 +141,233 @@ function bindEvents() {
     dom.promptInput.style.height = Math.min(dom.promptInput.scrollHeight, 120) + 'px';
   });
   dom.connBadge.addEventListener('click', () => {
-    if (state.connected) toast('Already connected', 'success');
-    else { clearTimeout(state.reconnectTimer); state.reconnectDelay = RECONNECT_BASE; connect(); }
+    const allConnected = state.groups.every(g => g.connected);
+    if (allConnected && state.groups.length > 0) { toast('All connected', 'success'); }
+    else { connectAll(); }
   });
-  $('auth-submit').addEventListener('click', submitAuth);
-  $('auth-cancel').addEventListener('click', () => { if (state.token) hideAuthModal(); });
-  $('settings-btn').addEventListener('click', () => {
-    dom.authToken.value = state.token; dom.authServer.value = state.serverUrl; showAuthModal();
-  });
-  dom.serverInput.addEventListener('change', () => {
-    state.serverUrl = dom.serverInput.value.trim() || DEFAULT_SERVER; saveSettings();
-  });
+  dom.addTokenBtn.addEventListener('click', showTokenModal);
+  $('token-submit').addEventListener('click', submitToken);
+  $('token-cancel').addEventListener('click', hideTokenModal);
   $('sessions-btn').addEventListener('click', () => {
-    requestSessions(state.selectedMachine || Object.keys(state.machines)[0]);
+    if (!state.selectedTarget) { toast('Select a machine first', 'error'); return; }
+    const [gid, mid] = state.selectedTarget.split(':');
+    const group = state.groups.find(g => g.id === gid);
+    if (group) requestSessions(group, mid);
   });
   dom.targetSelect.addEventListener('change', () => {
-    state.selectedMachine = dom.targetSelect.value || null; highlightSelectedCard();
+    state.selectedTarget = dom.targetSelect.value || null;
+    highlightSelectedCard();
+  });
+  dom.serverInput.addEventListener('change', () => {
+    // Update all groups' server URL
+    const url = dom.serverInput.value.trim() || DEFAULT_SERVER;
+    // Only applies to new tokens; existing ones keep their URL
   });
 }
 
-// ── Auth modal ─────────────────────────────────────────────────────────────
+// ── Token modal ────────────────────────────────────────────────────────────
 
-function showAuthModal() {
-  dom.authToken.value = state.token; dom.authServer.value = state.serverUrl;
-  dom.authModal.classList.remove('hidden');
-  setTimeout(() => dom.authToken.focus(), 300);
-}
-function hideAuthModal() { dom.authModal.classList.add('hidden'); }
-
-function submitAuth() {
-  const token = dom.authToken.value.trim();
-  const server = dom.authServer.value.trim() || DEFAULT_SERVER;
-  if (!token) { toast('Token is required', 'error'); dom.authToken.focus(); return; }
-  state.token = token; state.serverUrl = server; dom.serverInput.value = server;
-  saveSettings(); hideAuthModal();
-  if (state.ws) state.ws.close(); else connect();
+function showTokenModal() {
+  dom.tokenInput.value = '';
+  dom.tokenLabel.value = '';
+  dom.tokenServer.value = state.groups.length > 0 ? state.groups[0].serverUrl : DEFAULT_SERVER;
+  dom.tokenModal.classList.remove('hidden');
+  setTimeout(() => dom.tokenInput.focus(), 300);
 }
 
-// ── WebSocket ──────────────────────────────────────────────────────────────
+function hideTokenModal() { dom.tokenModal.classList.add('hidden'); }
 
-function connect() {
-  if (state.ws && state.ws.readyState <= WebSocket.OPEN) return;
-  setConnectionState('connecting');
-  try { state.ws = new WebSocket(state.serverUrl); }
-  catch { setConnectionState('error'); scheduleReconnect(); return; }
-  state.ws.addEventListener('open', onOpen);
-  state.ws.addEventListener('message', onMessage);
-  state.ws.addEventListener('close', onClose);
-  state.ws.addEventListener('error', () => setConnectionState('error'));
+function submitToken() {
+  const token = dom.tokenInput.value.trim();
+  const server = dom.tokenServer.value.trim() || DEFAULT_SERVER;
+  const label = dom.tokenLabel.value.trim() || token.substring(0, 12);
+
+  if (!token) { toast('Token is required', 'error'); dom.tokenInput.focus(); return; }
+
+  // Check duplicate
+  if (state.groups.find(g => g.token === token && g.serverUrl === server)) {
+    toast('Token already added', 'error'); return;
+  }
+
+  const group = {
+    id: 'g' + (++groupIdCounter),
+    token, label, serverUrl: server,
+    ws: null, connected: false,
+    reconnectTimer: null, reconnectDelay: RECONNECT_BASE,
+    machines: {},
+  };
+  state.groups.push(group);
+  saveGroups();
+  hideTokenModal();
+  connectGroup(group);
+  renderAllGroups();
+  rebuildTargetSelect();
+  updateGlobalConnectionState();
+  toast(`Added "${label}"`, 'success');
 }
 
-function onOpen() {
-  state.connected = true; state.reconnectDelay = RECONNECT_BASE;
-  setConnectionState('connected');
-  send({ type: 'register', role: 'controller', token: state.token });
-  send({ type: 'machines' });
+function removeGroup(groupId) {
+  const idx = state.groups.findIndex(g => g.id === groupId);
+  if (idx === -1) return;
+  const group = state.groups[idx];
+
+  // Cleanup engines
+  for (const id of Object.keys(group.machines)) {
+    if (group.machines[id].engine) {
+      try { group.machines[id].engine.cleanup(); } catch {}
+    }
+  }
+
+  // Disconnect WS
+  clearTimeout(group.reconnectTimer);
+  if (group.ws) { try { group.ws.close(); } catch {} }
+
+  state.groups.splice(idx, 1);
+  saveGroups();
+  renderAllGroups();
+  rebuildTargetSelect();
+  updateGlobalConnectionState();
+  toast(`Removed "${group.label}"`, 'success');
 }
 
-function onMessage(event) {
-  let msg; try { msg = JSON.parse(event.data); } catch { return; }
+// ── WebSocket (per group) ──────────────────────────────────────────────────
+
+function connectAll() {
+  for (const group of state.groups) connectGroup(group);
+  if (state.groups.length === 0) updateGlobalConnectionState();
+}
+
+function connectGroup(group) {
+  if (group.ws && group.ws.readyState <= WebSocket.OPEN) return;
+  updateGlobalConnectionState();
+
+  try { group.ws = new WebSocket(group.serverUrl); }
+  catch { group.connected = false; updateGlobalConnectionState(); scheduleReconnectGroup(group); return; }
+
+  group.ws.addEventListener('open', () => {
+    group.connected = true;
+    group.reconnectDelay = RECONNECT_BASE;
+    updateGlobalConnectionState();
+    groupSend(group, { type: 'register', role: 'controller', token: group.token });
+    groupSend(group, { type: 'machines' });
+  });
+
+  group.ws.addEventListener('message', (event) => {
+    let msg; try { msg = JSON.parse(event.data); } catch { return; }
+    handleGroupMessage(group, msg);
+  });
+
+  group.ws.addEventListener('close', () => {
+    group.connected = false;
+    updateGlobalConnectionState();
+    for (const id of Object.keys(group.machines)) {
+      group.machines[id].state = 'offline';
+      updateMachineCard(group, id);
+    }
+    scheduleReconnectGroup(group);
+  });
+
+  group.ws.addEventListener('error', () => {
+    group.connected = false;
+    updateGlobalConnectionState();
+  });
+}
+
+function scheduleReconnectGroup(group) {
+  clearTimeout(group.reconnectTimer);
+  group.reconnectTimer = setTimeout(() => { if (!group.connected) connectGroup(group); }, group.reconnectDelay);
+  group.reconnectDelay = Math.min(group.reconnectDelay * 1.6, RECONNECT_MAX);
+}
+
+function groupSend(group, data) {
+  if (group.ws && group.ws.readyState === WebSocket.OPEN) group.ws.send(JSON.stringify(data));
+}
+
+function updateGlobalConnectionState() {
+  if (state.groups.length === 0) {
+    dom.connBadge.className = 'conn-badge';
+    dom.connLabel.textContent = 'no tokens';
+    return;
+  }
+  const anyConnected = state.groups.some(g => g.connected);
+  const allConnected = state.groups.every(g => g.connected);
+  if (allConnected) {
+    dom.connBadge.className = 'conn-badge connected';
+    dom.connLabel.textContent = state.groups.length === 1 ? 'online' : `${state.groups.length} online`;
+  } else if (anyConnected) {
+    dom.connBadge.className = 'conn-badge connecting';
+    const n = state.groups.filter(g => g.connected).length;
+    dom.connLabel.textContent = `${n}/${state.groups.length}`;
+  } else {
+    dom.connBadge.className = 'conn-badge error';
+    dom.connLabel.textContent = 'offline';
+  }
+}
+
+// ── Message handling (per group) ───────────────────────────────────────────
+
+function handleGroupMessage(group, msg) {
   switch (msg.type) {
-    case 'machines':        handleMachinesList(msg.machines || []); break;
-    case 'status':          handleStatus(msg); break;
-    case 'stream':          handleStream(msg); break;
-    case 'result':          handleResult(msg); break;
+    case 'machines':        handleMachinesList(group, msg.machines || []); break;
+    case 'status':          handleStatus(group, msg); break;
+    case 'stream':          handleStream(group, msg); break;
+    case 'result':          handleResult(group, msg); break;
     case 'sessions':        handleSessionsList(msg); break;
     case 'session_detail':  handleSessionDetail(msg); break;
-    case 'daemon_disconnected': handleDaemonDisconnected(msg); break;
-    case 'error':           toast(msg.message || 'Server error', 'error'); break;
+    case 'error':           toast(`[${group.label}] ${msg.message || 'Error'}`, 'error'); break;
   }
 }
 
-function onClose() {
-  state.connected = false; setConnectionState('error');
-  for (const id of Object.keys(state.machines)) {
-    const m = state.machines[id];
-    if (m) { m.state = 'offline'; updateMachineCard(id); }
-  }
-  scheduleReconnect();
-}
-
-function scheduleReconnect() {
-  clearTimeout(state.reconnectTimer);
-  state.reconnectTimer = setTimeout(() => { if (!state.connected) connect(); }, state.reconnectDelay);
-  state.reconnectDelay = Math.min(state.reconnectDelay * 1.6, RECONNECT_MAX);
-}
-
-function send(data) {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(data));
-}
-
-function setConnectionState(s) {
-  dom.connBadge.className = 'conn-badge ' + s;
-  dom.connLabel.textContent = { connected:'online', connecting:'connecting', error:'offline' }[s] || s;
-}
-
-// ── Machine management ─────────────────────────────────────────────────────
-
-function handleMachinesList(machines) {
+function handleMachinesList(group, machines) {
   for (const m of machines) {
     const id = typeof m === 'string' ? m : (m.id || m.machineId);
     if (!id) continue;
-    if (!state.machines[id]) state.machines[id] = { id, name: id, state: 'idle' };
+    if (!group.machines[id]) {
+      group.machines[id] = { id, name: id, state: m.state || 'idle' };
+    }
+    // Update with server-provided data
+    if (typeof m === 'object') {
+      const machine = group.machines[id];
+      if (m.state) machine.state = m.state;
+      if (m.tool !== undefined) machine.tool = m.tool;
+      if (m.project) machine.project = m.project;
+      if (m.model) machine.model = m.model;
+      if (m.memory !== undefined) machine.memory = m.memory;
+    }
   }
-  renderMachines();
+  renderGroupRow(group);
   rebuildTargetSelect();
 }
 
-function handleStatus(msg) {
+function handleStatus(group, msg) {
   const id = msg.machineId || msg.machine_id || msg.id;
   if (!id) return;
-  if (!state.machines[id]) {
-    state.machines[id] = { id, name: id, state: 'idle' };
-    renderMachines();
+  if (!group.machines[id]) {
+    group.machines[id] = { id, name: id, state: 'idle' };
+    renderGroupRow(group);
     rebuildTargetSelect();
   }
-  const m = state.machines[id];
+  const m = group.machines[id];
   m.state = msg.state || m.state;
   if (msg.tool !== undefined) m.tool = msg.tool;
   if (msg.project) m.project = msg.project;
   if (msg.model) m.model = msg.model;
   if (msg.memory !== undefined) m.memory = msg.memory;
-  updateMachineCard(id);
+  updateMachineCard(group, id);
 }
 
-function handleDaemonDisconnected(msg) {
-  const id = msg.machineId || msg.machine_id || msg.id;
-  if (!id) return;
-  const m = state.machines[id];
-  if (m) { m.state = 'offline'; updateMachineCard(id); }
-}
-
-function getStatusLabel(m) {
-  const st = m.state || 'idle';
-  if (st === 'working' || st === 'tool_use') {
-    return TOOL_LABELS[m.tool] || 'Working';
-  }
-  return STATE_LABELS[st] || 'Ready';
-}
-
-function updateMachineCard(id) {
-  const m = state.machines[id];
-  if (!m) return;
-  const st = m.state || 'idle';
-  const color = STATE_COLORS[st] || STATE_COLORS.idle;
-
-  const card = dom.machinesList.querySelector(`[data-machine="${CSS.escape(id)}"]`);
-  if (!card) return;
-
-  // Card border/glow
-  card.style.background = color + '22';
-  card.style.borderColor = color + '60';
-  card.style.boxShadow = `inset 0 0 30px ${color}15, 0 0 15px ${color}20`;
-
-  // Top bar
-  const topBar = card.querySelector('.card-top-bar');
-  if (topBar) topBar.style.background = color;
-
-  // VibeMon engine handles all rendering (character, status, project, model, memory)
-  if (m.engine) {
-    m.engine.setState({
-      state: st,
-      character: 'clawd',
-      tool: m.tool || '',
-      project: m.project || '',
-      model: m.model || '',
-      memory: m.memory || 0,
-    });
-    m.engine.render();
-  }
-}
-
-async function initEngineForCard(container, machineData) {
-  if (!state.createEngine) return null;
-  try {
-    const engine = state.createEngine(container, {
-      useEmoji: false,
-      characterImageUrls: {
-        apto:  `${STATIC_BASE}/characters/apto.png`,
-        clawd: `${STATIC_BASE}/characters/clawd.png`,
-        kiro:  `${STATIC_BASE}/characters/kiro.png`,
-        claw:  `${STATIC_BASE}/characters/claw.png`,
-      }
-    });
-    await engine.init();
-    engine.setState({
-      state: machineData.state || 'idle',
-      character: 'clawd',
-      tool: machineData.tool || '',
-      project: machineData.project || '',
-      model: machineData.model || '',
-      memory: machineData.memory || 0,
-    });
-    engine.render();
-    engine.startAnimation();
-    return engine;
-  } catch (e) {
-    console.warn('VibeMon engine init failed:', e);
-    return null;
-  }
-}
-
-function renderMachines() {
-  // Cleanup old engines
-  for (const id of Object.keys(state.machines)) {
-    if (state.machines[id].engine) {
-      try { state.machines[id].engine.cleanup(); } catch {}
-      state.machines[id].engine = null;
-    }
-  }
-
-  dom.machinesList.innerHTML = '';
-
-  const ids = Object.keys(state.machines);
-  if (ids.length === 0) {
-    dom.machinesList.innerHTML = `
-      <div class="machine-card-empty">
-        <div class="empty-face">( · _ · )</div>
-        <span>no daemons<br>connected</span>
-      </div>`;
-    return;
-  }
-
-  for (const id of ids) {
-    const m = state.machines[id];
-    const st = m.state || 'idle';
-    const color = STATE_COLORS[st] || STATE_COLORS.idle;
-
-    const card = document.createElement('div');
-    card.className = 'machine-card';
-    card.dataset.machine = id;
-    card.style.background = color + '22';
-    card.style.borderColor = color + '60';
-    card.style.boxShadow = `inset 0 0 30px ${color}15, 0 0 15px ${color}20`;
-    if (state.selectedMachine === id) card.classList.add('selected');
-
-    // VibeMon engine renders everything (character, status, project, model, memory)
-    // Wrapper clips the scaled-down 172x348 container to card size
-    card.innerHTML = `
-      <div class="card-top-bar" style="background:${color}"></div>
-      <div class="card-vibemon-wrapper"><div class="card-vibemon vibemon-display"></div></div>
-      <div class="card-machine-name">${esc(m.name)}</div>
-    `;
-
-    card.addEventListener('click', () => selectMachine(id));
-    dom.machinesList.appendChild(card);
-
-    // Initialize VibeMon engine for this card
-    if (state.vibeMonReady) {
-      const container = card.querySelector('.card-vibemon');
-      initEngineForCard(container, m).then(engine => {
-        if (engine) m.engine = engine;
-      });
-    }
-  }
-}
-
-function selectMachine(id) {
-  state.selectedMachine = id;
-  dom.targetSelect.value = id;
-  highlightSelectedCard();
-  dom.promptInput.focus();
-}
-
-function highlightSelectedCard() {
-  dom.machinesList.querySelectorAll('.machine-card').forEach(c => {
-    c.classList.toggle('selected', c.dataset.machine === state.selectedMachine);
-  });
-}
-
-function rebuildTargetSelect() {
-  const current = dom.targetSelect.value;
-  dom.targetSelect.innerHTML = '<option value="">— pick target —</option>';
-  for (const id of Object.keys(state.machines)) {
-    const opt = document.createElement('option');
-    opt.value = id; opt.textContent = state.machines[id].name;
-    dom.targetSelect.appendChild(opt);
-  }
-  if (current && state.machines[current]) dom.targetSelect.value = current;
-}
-
-// ── Commands ───────────────────────────────────────────────────────────────
-
-function sendCommand() {
-  const prompt = dom.promptInput.value.trim();
-  if (!prompt) { toast('Enter a prompt first', 'error'); return; }
-  const target = state.selectedMachine || dom.targetSelect.value;
-  if (!target) { toast('Select a target machine', 'error'); return; }
-  if (!state.connected) { toast('Not connected', 'error'); return; }
-
-  const msg = { type: 'command', target, prompt };
-  const session = dom.sessionInput.value.trim();
-  if (session) msg.sessionId = session;
-  send(msg);
-
-  createResultBlock(target, prompt, null);
-  dom.promptInput.value = '';
-  dom.promptInput.style.height = '';
-  dom.sendBtn.disabled = true;
-  setTimeout(() => { dom.sendBtn.disabled = false; }, 800);
-}
-
-// ── Result streaming ───────────────────────────────────────────────────────
-
-function handleStream(msg) {
+function handleStream(group, msg) {
   const mid = msg.machineId || msg.machine_id || msg.id || 'default';
-  let block = state.resultBlocks[mid] || createResultBlock(mid, null, mid);
+  const blockKey = group.id + ':' + mid;
+  let block = state.resultBlocks[blockKey] || createResultBlock(group, mid, blockKey);
   appendChunk(block, msg.chunk || msg.content || '');
   scrollToBottom();
 }
 
-function handleResult(msg) {
+function handleResult(group, msg) {
   const mid = msg.machineId || msg.machine_id || msg.id || 'default';
-  let block = state.resultBlocks[mid] || createResultBlock(mid, null, mid);
+  const blockKey = group.id + ':' + mid;
+  let block = state.resultBlocks[blockKey] || createResultBlock(group, mid, blockKey);
   const cursor = block.bodyEl.querySelector('.cursor');
   if (cursor) cursor.remove();
   block.el.classList.remove('streaming');
@@ -441,9 +391,243 @@ function handleResult(msg) {
   scrollToBottom();
 }
 
-function createResultBlock(machineId, prompt, blockId) {
-  const id = blockId || ('block-' + (++state.blockCounter));
-  const name = state.machines[machineId]?.name || machineId || 'unknown';
+// ── Machine card rendering ─────────────────────────────────────────────────
+
+function getStatusLabel(m) {
+  const st = m.state || 'idle';
+  if (st === 'working' || st === 'tool_use') return TOOL_LABELS[m.tool] || 'Working';
+  return STATE_LABELS[st] || 'Ready';
+}
+
+function updateMachineCard(group, id) {
+  const m = group.machines[id];
+  if (!m) return;
+  const st = m.state || 'idle';
+  const color = STATE_COLORS[st] || STATE_COLORS.idle;
+
+  const groupRow = dom.machinesList.querySelector(`[data-group="${group.id}"]`);
+  if (!groupRow) return;
+  const card = groupRow.querySelector(`[data-machine="${CSS.escape(id)}"]`);
+  if (!card) return;
+
+  card.style.background = color + '22';
+  card.style.borderColor = color + '60';
+  card.style.boxShadow = `inset 0 0 30px ${color}15, 0 0 15px ${color}20`;
+
+  const topBar = card.querySelector('.card-top-bar');
+  if (topBar) topBar.style.background = color;
+
+  if (m.engine) {
+    m.engine.setState({
+      state: st, character: 'clawd',
+      tool: m.tool || '', project: m.project || '',
+      model: m.model || '', memory: m.memory || 0,
+    });
+    m.engine.render();
+  }
+}
+
+async function initEngineForCard(container, machineData) {
+  if (!state.createEngine) return null;
+  try {
+    const engine = state.createEngine(container, {
+      useEmoji: false,
+      characterImageUrls: {
+        apto:  `${STATIC_BASE}/characters/apto.png`,
+        clawd: `${STATIC_BASE}/characters/clawd.png`,
+        kiro:  `${STATIC_BASE}/characters/kiro.png`,
+        claw:  `${STATIC_BASE}/characters/claw.png`,
+      }
+    });
+    await engine.init();
+    engine.setState({
+      state: machineData.state || 'idle', character: 'clawd',
+      tool: machineData.tool || '', project: machineData.project || '',
+      model: machineData.model || '', memory: machineData.memory || 0,
+    });
+    engine.render();
+    engine.startAnimation();
+    return engine;
+  } catch (e) {
+    console.warn('VibeMon engine init failed:', e);
+    return null;
+  }
+}
+
+function renderAllGroups() {
+  // Cleanup all engines
+  for (const group of state.groups) {
+    for (const id of Object.keys(group.machines)) {
+      if (group.machines[id].engine) {
+        try { group.machines[id].engine.cleanup(); } catch {}
+        group.machines[id].engine = null;
+      }
+    }
+  }
+
+  dom.machinesList.innerHTML = '';
+
+  if (state.groups.length === 0) {
+    dom.machinesList.innerHTML = `
+      <div class="machine-card-empty" style="width:100%">
+        <div class="empty-face">( · _ · )</div>
+        <span>no tokens added<br>tap + to add one</span>
+      </div>`;
+    return;
+  }
+
+  for (const group of state.groups) {
+    renderGroupRow(group);
+  }
+}
+
+function renderGroupRow(group) {
+  // Cleanup engines for this group
+  for (const id of Object.keys(group.machines)) {
+    if (group.machines[id].engine) {
+      try { group.machines[id].engine.cleanup(); } catch {}
+      group.machines[id].engine = null;
+    }
+  }
+
+  let groupEl = dom.machinesList.querySelector(`[data-group="${group.id}"]`);
+  if (!groupEl) {
+    groupEl = document.createElement('div');
+    groupEl.className = 'token-group';
+    groupEl.dataset.group = group.id;
+    dom.machinesList.appendChild(groupEl);
+  }
+
+  const ids = Object.keys(group.machines);
+  const connDot = group.connected ? 'connected' : 'disconnected';
+
+  groupEl.innerHTML = `
+    <div class="token-group-header">
+      <div class="token-group-dot ${connDot}"></div>
+      <span class="token-group-label">${esc(group.label)}</span>
+      <button class="token-remove-btn" data-remove="${group.id}" title="Remove token">&times;</button>
+    </div>
+    <div class="token-group-cards">
+      ${ids.length === 0 ? `
+        <div class="machine-card-empty">
+          <div class="empty-face">( · _ · )</div>
+          <span>no daemons</span>
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  // Bind remove button
+  groupEl.querySelector('.token-remove-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (confirm(`Remove token "${group.label}"?`)) removeGroup(group.id);
+  });
+
+  const cardsContainer = groupEl.querySelector('.token-group-cards');
+
+  for (const id of ids) {
+    const m = group.machines[id];
+    const st = m.state || 'idle';
+    const color = STATE_COLORS[st] || STATE_COLORS.idle;
+
+    const card = document.createElement('div');
+    card.className = 'machine-card';
+    card.dataset.machine = id;
+    card.style.background = color + '22';
+    card.style.borderColor = color + '60';
+    card.style.boxShadow = `inset 0 0 30px ${color}15, 0 0 15px ${color}20`;
+
+    const targetKey = group.id + ':' + id;
+    if (state.selectedTarget === targetKey) card.classList.add('selected');
+
+    card.innerHTML = `
+      <div class="card-top-bar" style="background:${color}"></div>
+      <div class="card-vibemon-wrapper"><div class="card-vibemon vibemon-display"></div></div>
+      <div class="card-machine-name">${esc(m.name)}</div>
+    `;
+
+    card.addEventListener('click', () => selectMachine(group, id));
+    cardsContainer.appendChild(card);
+
+    if (state.vibeMonReady) {
+      const container = card.querySelector('.card-vibemon');
+      initEngineForCard(container, m).then(engine => {
+        if (engine) m.engine = engine;
+      });
+    }
+  }
+}
+
+function selectMachine(group, machineId) {
+  state.selectedTarget = group.id + ':' + machineId;
+  dom.targetSelect.value = state.selectedTarget;
+  highlightSelectedCard();
+  dom.promptInput.focus();
+}
+
+function highlightSelectedCard() {
+  dom.machinesList.querySelectorAll('.machine-card').forEach(c => {
+    const groupEl = c.closest('[data-group]');
+    if (!groupEl) { c.classList.remove('selected'); return; }
+    const targetKey = groupEl.dataset.group + ':' + c.dataset.machine;
+    c.classList.toggle('selected', targetKey === state.selectedTarget);
+  });
+}
+
+function rebuildTargetSelect() {
+  const current = dom.targetSelect.value;
+  dom.targetSelect.innerHTML = '<option value="">— pick target —</option>';
+
+  for (const group of state.groups) {
+    const ids = Object.keys(group.machines);
+    if (ids.length === 0) continue;
+
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = group.label;
+
+    for (const id of ids) {
+      const opt = document.createElement('option');
+      opt.value = group.id + ':' + id;
+      opt.textContent = group.machines[id].name;
+      optgroup.appendChild(opt);
+    }
+    dom.targetSelect.appendChild(optgroup);
+  }
+
+  if (current) dom.targetSelect.value = current;
+}
+
+// ── Commands ───────────────────────────────────────────────────────────────
+
+function sendCommand() {
+  const prompt = dom.promptInput.value.trim();
+  if (!prompt) { toast('Enter a prompt first', 'error'); return; }
+
+  const target = state.selectedTarget || dom.targetSelect.value;
+  if (!target || !target.includes(':')) { toast('Select a target machine', 'error'); return; }
+
+  const [gid, mid] = target.split(':');
+  const group = state.groups.find(g => g.id === gid);
+  if (!group) { toast('Token group not found', 'error'); return; }
+  if (!group.connected) { toast('Not connected to this token', 'error'); return; }
+
+  const msg = { type: 'command', target: mid, prompt };
+  const session = dom.sessionInput.value.trim();
+  if (session) msg.sessionId = session;
+  groupSend(group, msg);
+
+  createResultBlock(group, mid, null);
+  dom.promptInput.value = '';
+  dom.promptInput.style.height = '';
+  dom.sendBtn.disabled = true;
+  setTimeout(() => { dom.sendBtn.disabled = false; }, 800);
+}
+
+// ── Result streaming ───────────────────────────────────────────────────────
+
+function createResultBlock(group, machineId, blockId) {
+  const id = blockId || (group.id + ':' + machineId);
+  const name = group.machines[machineId]?.name || machineId || 'unknown';
   const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (dom.resultsEmpty) dom.resultsEmpty.style.display = 'none';
 
@@ -452,10 +636,10 @@ function createResultBlock(machineId, prompt, blockId) {
   el.dataset.blockId = id;
   el.innerHTML = `
     <div class="result-header">
-      <span class="result-machine">${esc(name)}</span>
+      <span class="result-machine">${esc(group.label)} / ${esc(name)}</span>
       <span class="result-meta">${esc(ts)}</span>
     </div>
-    <div class="result-body">${prompt ? '<span class="prompt-echo">\u203A ' + esc(prompt) + '\n\n</span>' : ''}<span class="cursor"></span></div>
+    <div class="result-body"><span class="cursor"></span></div>
   `;
 
   dom.resultsScroll.appendChild(el);
@@ -486,9 +670,9 @@ function esc(str) {
 
 // ── Session browser ─────────────────────────────────────────────────────
 
-function requestSessions(machineId) {
+function requestSessions(group, machineId) {
   if (!machineId) { toast('Select a machine first', 'error'); return; }
-  send({ type: 'sessions', target: machineId, limit: 20 });
+  groupSend(group, { type: 'sessions', target: machineId, limit: 20 });
   toast('Loading sessions...', 'success');
 }
 
@@ -543,7 +727,13 @@ function showSessionsModal(sessions, machineId) {
   modal.querySelector('.sessions-backdrop').addEventListener('click', () => modal.remove());
   modal.querySelectorAll('.session-item').forEach(item => {
     item.addEventListener('click', () => {
-      send({ type: 'session_detail', target: item.dataset.machine, sessionId: item.dataset.sid });
+      // Find the right group to send through
+      const target = state.selectedTarget;
+      if (target) {
+        const [gid] = target.split(':');
+        const group = state.groups.find(g => g.id === gid);
+        if (group) groupSend(group, { type: 'session_detail', target: item.dataset.machine, sessionId: item.dataset.sid });
+      }
       item.style.opacity = '0.5';
     });
   });
