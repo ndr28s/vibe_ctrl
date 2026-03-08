@@ -614,44 +614,86 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // ============================================================================
-// Hook status file watcher
+// Hook status file watcher (per-session)
 // ============================================================================
-// The vibes-hook.py writes status to ~/.vibes/status.json on each Claude Code
-// event. We watch this file and forward changes to the WebSocket server so
-// that the smartphone app can see real-time status from interactive sessions.
+// The vibes-hook.py writes status to ~/.vibes/sessions/{sessionId}.json
+// for each Claude Code session. We watch all session files and forward
+// changes to the WebSocket server so the smartphone app can see each session
+// as a separate card.
 
-const STATUS_FILE = path.join(os.homedir(), ".vibes", "status.json");
-let lastStatusMtime = 0;
+const SESSIONS_DIR = path.join(os.homedir(), ".vibes", "sessions");
+const SESSION_STALE_MS = 5 * 60 * 1000; // 5 minutes — mark stale sessions as done
 
-function watchStatusFile() {
-  const dir = path.dirname(STATUS_FILE);
-  if (!fs.existsSync(dir)) {
-    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+/** Track mtime per session file to detect changes */
+const sessionMtimes = new Map(); // filename → lastMtime
+
+function watchStatusFiles() {
+  if (!fs.existsSync(SESSIONS_DIR)) {
+    try { fs.mkdirSync(SESSIONS_DIR, { recursive: true }); } catch (_) {}
   }
 
   // Poll every 500ms (fs.watch is unreliable on Windows)
   setInterval(() => {
     try {
-      const stat = fs.statSync(STATUS_FILE);
-      const mtime = stat.mtimeMs;
-      if (mtime > lastStatusMtime) {
-        lastStatusMtime = mtime;
-        const raw = fs.readFileSync(STATUS_FILE, "utf8");
-        const status = JSON.parse(raw);
-        // Forward hook status to WebSocket server
-        wsSend({
-          type: "status",
-          state: status.state || "idle",
-          tool: status.tool || "",
-          project: status.project || "",
-          model: status.model || "",
-          memory: status.memory || 0,
-          machineId: MACHINE_ID,
-        });
-        log(`Hook status forwarded: ${status.state} (${status.project || "?"})`);
+      const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+
+      const activeFiles = new Set();
+
+      for (const file of files) {
+        activeFiles.add(file);
+        const filePath = path.join(SESSIONS_DIR, file);
+
+        try {
+          const stat = fs.statSync(filePath);
+          const mtime = stat.mtimeMs;
+          const lastMtime = sessionMtimes.get(file) || 0;
+
+          // Check if stale (no update for 5 min)
+          if (Date.now() - mtime > SESSION_STALE_MS) {
+            // Clean up stale session file
+            try { fs.unlinkSync(filePath); } catch (_) {}
+            if (sessionMtimes.has(file)) {
+              sessionMtimes.delete(file);
+              // Send done status for this session
+              const sessionId = file.replace(".json", "");
+              wsSend({
+                type: "status",
+                state: "done",
+                tool: "",
+                project: "",
+                model: "",
+                memory: 0,
+                machineId: `${MACHINE_ID}/${sessionId}`,
+              });
+              log(`Session ${sessionId} stale — removed`);
+            }
+            continue;
+          }
+
+          if (mtime > lastMtime) {
+            sessionMtimes.set(file, mtime);
+            const raw = fs.readFileSync(filePath, "utf8");
+            const status = JSON.parse(raw);
+            const sessionId = status.sessionId || file.replace(".json", "");
+
+            // Use machineId/sessionId as virtual machine ID
+            wsSend({
+              type: "status",
+              state: status.state || "idle",
+              tool: status.tool || "",
+              project: status.project || "",
+              model: status.model || "",
+              memory: status.memory || 0,
+              machineId: `${MACHINE_ID}/${sessionId}`,
+            });
+            log(`Hook status forwarded: ${status.state} [${sessionId}] (${status.project || "?"})`);
+          }
+        } catch (_) {
+          // Parse error or file removed — ignore
+        }
       }
     } catch (_) {
-      // File doesn't exist yet or parse error — ignore
+      // Directory doesn't exist yet — ignore
     }
   }, 500);
 }
@@ -666,5 +708,5 @@ log(`  Machine : ${MACHINE_ID}`);
 log(`  Claude  : ${CLAUDE_PATH}`);
 
 connect();
-watchStatusFile();
-log("Watching ~/.vibes/status.json for hook updates");
+watchStatusFiles();
+log("Watching ~/.vibes/sessions/ for hook updates");

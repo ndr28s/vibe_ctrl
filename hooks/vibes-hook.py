@@ -113,16 +113,23 @@ def get_project_name(cwd: str, transcript_path: str) -> str:
 # Send Status
 # ============================================================================
 
-def send_status(payload: dict[str, Any]) -> bool:
-    """Send status to vibes-server HTTP bridge endpoint."""
+def get_session_id(transcript_path: str) -> str:
+    """Extract short session ID from transcript path."""
+    if transcript_path:
+        name = Path(transcript_path).stem  # e.g. "abc12345-..."
+        return name[:8] if name else "default"
+    return "default"
+
+
+def send_status(payload: dict[str, Any], session_id: str) -> bool:
+    """Write status to per-session file in ~/.vibes/sessions/."""
     try:
-        # vibes-server can optionally expose an HTTP endpoint,
-        # but primarily we write to a shared status file that the daemon reads
-        status_path = Path.home() / ".vibes" / "status.json"
-        status_path.parent.mkdir(parents=True, exist_ok=True)
+        sessions_dir = Path.home() / ".vibes" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        status_path = sessions_dir / f"{session_id}.json"
         with open(status_path, "w") as f:
             json.dump(payload, f)
-        debug_log(f"Status written: {payload.get('state')}")
+        debug_log(f"Status written: {payload.get('state')} -> {status_path.name}")
         return True
     except Exception as e:
         debug_log(f"Failed to write status: {e}")
@@ -145,6 +152,7 @@ def main() -> None:
     project_name = get_project_name(cwd, transcript_path)
     state = get_state(event_name, permission_mode)
     model = data.get("model", "")
+    session_id = get_session_id(transcript_path)
 
     # Estimate memory usage from transcript file size vs typical max (~2MB for most models)
     memory = 0
@@ -156,7 +164,7 @@ def main() -> None:
         except (OSError, ValueError):
             memory = 0
 
-    debug_log(f"Event: {event_name}, State: {state}, Project: {project_name}, Model: {model}, Memory: {memory}%")
+    debug_log(f"Event: {event_name}, State: {state}, Project: {project_name}, Session: {session_id}, Model: {model}, Memory: {memory}%")
 
     payload = {
         "type": "status",
@@ -166,10 +174,11 @@ def main() -> None:
         "model": model,
         "memory": memory,
         "machineId": MACHINE_ID,
+        "sessionId": session_id,
         "timestamp": __import__("time").time(),
     }
 
-    send_status(payload)
+    send_status(payload, session_id)
 
 
 if __name__ == "__main__":
