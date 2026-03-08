@@ -526,9 +526,24 @@ function renderGroupRow(group) {
   `;
 
   // Bind remove button
-  groupEl.querySelector('.token-remove-btn').addEventListener('click', (e) => {
+  const removeBtn = groupEl.querySelector('.token-remove-btn');
+  removeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (confirm(`Remove token "${group.label}"?`)) removeGroup(group.id);
+    e.preventDefault();
+    // Double-tap to confirm: first tap marks, second tap removes
+    if (removeBtn._confirmPending) {
+      removeGroup(group.id);
+    } else {
+      removeBtn._confirmPending = true;
+      removeBtn.textContent = '?';
+      removeBtn.style.color = 'var(--red)';
+      toast('Tap again to remove', 'error');
+      setTimeout(() => {
+        removeBtn._confirmPending = false;
+        removeBtn.textContent = '\u00d7';
+        removeBtn.style.color = '';
+      }, 3000);
+    }
   });
 
   const cardsContainer = groupEl.querySelector('.token-group-cards');
