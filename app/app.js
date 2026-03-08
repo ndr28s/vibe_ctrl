@@ -509,7 +509,16 @@ function renderGroupRow(group) {
     dom.machinesList.appendChild(groupEl);
   }
 
-  const ids = Object.keys(group.machines);
+  const allIds = Object.keys(group.machines);
+  // Hide base machineId (no "/") when per-session cards (with "/") are active
+  const sessionIds = allIds.filter(id => id.includes('/'));
+  const hasActiveSessions = sessionIds.some(id => {
+    const m = group.machines[id];
+    return m && m.state !== 'done' && m.state !== 'sleep' && m.state !== 'offline';
+  });
+  const ids = hasActiveSessions
+    ? allIds.filter(id => id.includes('/'))
+    : allIds.filter(id => !id.includes('/') || allIds.length === sessionIds.length);
   const connDot = group.connected ? 'connected' : 'disconnected';
 
   groupEl.innerHTML = `
@@ -596,8 +605,14 @@ function rebuildTargetSelect() {
   dom.targetSelect.innerHTML = '<option value="">— pick target —</option>';
 
   for (const group of state.groups) {
-    const ids = Object.keys(group.machines);
-    if (ids.length === 0) continue;
+    const allIds = Object.keys(group.machines);
+    if (allIds.length === 0) continue;
+    const sessionIds = allIds.filter(id => id.includes('/'));
+    const hasActive = sessionIds.some(id => {
+      const m = group.machines[id];
+      return m && m.state !== 'done' && m.state !== 'sleep' && m.state !== 'offline';
+    });
+    const ids = hasActive ? sessionIds : allIds.filter(id => !id.includes('/'));
 
     const optgroup = document.createElement('optgroup');
     optgroup.label = group.label;
