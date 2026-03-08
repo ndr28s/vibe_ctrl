@@ -3,7 +3,7 @@
  * Uses VibeMon engine for character rendering.
  */
 
-const DEFAULT_SERVER = 'ws://89.167.114.185:8765';
+const DEFAULT_SERVER = 'wss://vibes.forthetest.shop/ws';
 const RECONNECT_BASE = 1500;
 const RECONNECT_MAX  = 30000;
 const STATIC_BASE    = 'https://static.vibemon.io';
