@@ -174,7 +174,7 @@ body {
 
 .machine-card {
   flex-shrink: 0;
-  width: 160px;
+  width: 110px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -197,16 +197,16 @@ body {
   transition: background 0.3s;
 }
 
-/* VibeMon engine renders at 172x320 CSS pixels */
+/* VibeMon engine renders at 172x320 CSS pixels, scaled to ~2/3 */
 .card-vibemon-wrapper {
-  width: 160px;
-  height: 298px;
+  width: 110px;
+  height: 204px;
   overflow: hidden;
 }
 .card-vibemon {
   width: 172px;
   height: 320px;
-  transform: scale(0.9302);
+  transform: scale(0.6395);
   transform-origin: top left;
 }
 
@@ -506,8 +506,8 @@ textarea#prompt { flex: 1; resize: none; min-height: 48px; max-height: 120px; li
   body { border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
 }
 @media (max-width: 360px) {
-  .machine-card { width: 140px; }
-  .card-vibemon-wrapper { width: 140px; height: 260px; }
-  .card-vibemon { transform: scale(0.8140); }
+  .machine-card { width: 95px; }
+  .card-vibemon-wrapper { width: 95px; height: 176px; }
+  .card-vibemon { transform: scale(0.5523); }
   .session-input { width: 90px; }
 }
